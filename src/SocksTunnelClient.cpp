@@ -1,7 +1,14 @@
 #include <cstring>
+
+
+#include <signal.h>
+
+#ifdef __linux__
 #include <unistd.h>
 #include <netdb.h>
-#include <signal.h>
+#elif _WIN32
+#pragma comment(lib, "ws2_32.lib")
+#endif
 
 #include <iostream>
 #include <string>
@@ -13,6 +20,8 @@
 
 using namespace std;
 
+
+#ifdef __linux__
 
 class Lock 
 {
@@ -42,6 +51,10 @@ public:
 
 Lock get_host_lock;
 
+#elif _WIN32
+
+#endif
+
 
 std::string int_to_str(uint32_t ip) 
 {
@@ -58,15 +71,20 @@ std::string int_to_str(uint32_t ip)
 
 int connect_to_host(uint32_t ip, uint16_t port) 
 {
+    
     struct sockaddr_in serv_addr;
     struct hostent *server;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
         return -1;
+
+#ifdef __linux__
+
     bzero((char *) &serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET; 
     std::string ip_string = int_to_str(ip);
     
+
     get_host_lock.lock();
     server = gethostbyname(ip_string.c_str());
     if(!server) 
@@ -76,6 +94,10 @@ int connect_to_host(uint32_t ip, uint16_t port)
     }
     bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr, server->h_length);
     get_host_lock.unlock();
+
+#elif _WIN32
+
+#endif
     
     serv_addr.sin_port = htons(port);
     return !connect(sockfd, (const sockaddr*)&serv_addr, sizeof(serv_addr)) ? sockfd : -1;
@@ -95,13 +117,22 @@ SocksTunnelClient::SocksTunnelClient(int id)
 SocksTunnelClient::~SocksTunnelClient()
 {
     shutdown(m_clientfd, SHUT_RDWR);
+
+#ifdef __linux__
     close(m_clientfd);    
+#elif _WIN32
+    closesocket(m_clientfd);    
+#endif
 }
 
 
 int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 {
-    signal(SIGPIPE, sig_handler);
+#ifdef __linux__
+    signal(SIGPIPE, sig_handler); 
+#elif _WIN32
+     
+#endif
 
     m_clientfd = connect_to_host(ip_dst, ntohs(port));
     if(m_clientfd == -1)

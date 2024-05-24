@@ -1,5 +1,12 @@
 #pragma once
 
+#ifdef __linux__
+#elif _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#endif
+
+
 #define BUF_SIZE 256
 
 // Command constants 
@@ -22,52 +29,17 @@
 #define RESP_SUCCEDED       0
 #define RESP_GEN_ERROR      1
 
+// windows compatibility
+#ifndef _SSIZE_T_DEFINED
+#ifdef  _WIN64
+typedef unsigned __int64    ssize_t;
+#endif
+#define _SSIZE_T_DEFINED
+#endif
 
-// Handshake
-struct MethodIdentificationPacket 
-{
-    uint8_t version, nmethods;
-    // uint8_t methods[nmethods];
-} __attribute__((packed));
-
-
-struct MethodSelectionPacket 
-{
-    uint8_t version, method;
-    MethodSelectionPacket(uint8_t met) : version(5), method(met) {}
-} __attribute__((packed));
-
-
-// Requests
-struct SOCKS5RequestHeader 
-{
-    uint8_t version, cmd, rsv /* = 0x00 */, atyp;
-} __attribute__((packed));
-
-
-struct SOCK5IP4RequestBody 
-{
-    uint32_t ip_dst;
-    uint16_t port;
-} __attribute__((packed));
-
-
-struct SOCK5DNameRequestBody 
-{
-    uint8_t length;
-    // uint8_t dname[length]; 
-} __attribute__((packed));
-
-
-// Responses
-struct SOCKS5Response 
-{
-    uint8_t version, cmd, rsv /* = 0x00 */, atyp;
-    uint32_t ip_src;
-    uint16_t port_src;
-    
-    SOCKS5Response(bool succeded = true) : version(5), cmd(succeded ? RESP_SUCCEDED : RESP_GEN_ERROR), rsv(0), atyp(ATYP_IPV4) { }
-} __attribute__((packed));
+#ifndef SHUT_RDWR
+#define SHUT_RDWR 2 
+#endif
 
 
 // handle sig_pipe that can crash the app otherwise
