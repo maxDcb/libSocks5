@@ -1,6 +1,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <netdb.h>
+#include <signal.h>
 
 #include <iostream>
 #include <string>
@@ -84,7 +85,8 @@ int connect_to_host(uint32_t ip, uint16_t port)
 //
 // SocksTunnelClient
 // 
-SocksTunnelClient::SocksTunnelClient()
+SocksTunnelClient::SocksTunnelClient(int id)
+: m_id(id)
 {
     m_internalBuffer.resize(BUF_SIZE);
 }
@@ -99,6 +101,8 @@ SocksTunnelClient::~SocksTunnelClient()
 
 int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 {
+    signal(SIGPIPE, sig_handler);
+
     m_clientfd = connect_to_host(ip_dst, ntohs(port));
     if(m_clientfd == -1)
     {
@@ -109,7 +113,7 @@ int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 }
 
 
-int SocksTunnelClient::process(std::string& dataIn, std::string& dataOut)
+int SocksTunnelClient::process(const std::string& dataIn, std::string& dataOut)
 {
     if(dataIn.size()>0)
         send_sock(m_clientfd, dataIn.data(), dataIn.size());

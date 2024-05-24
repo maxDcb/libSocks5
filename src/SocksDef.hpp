@@ -70,6 +70,12 @@ struct SOCKS5Response
 } __attribute__((packed));
 
 
+// handle sig_pipe that can crash the app otherwise
+inline void sig_handler(int signum) 
+{
+}
+
+
 inline int recv_sock(int sock, char *buffer, uint32_t size) 
 {
     int index = 0, ret;
@@ -109,9 +115,9 @@ inline bool readAllDataFromSocket(int sockfd, char* buffer, ssize_t &bytes_recei
     FD_ZERO(&readfds);
     FD_SET(sockfd, &readfds);
 
-    // Set timeout 1ms
+    // TODO how to Set timeout, now 10ms
     timeout.tv_sec = 0;
-    timeout.tv_usec = 1000;
+    timeout.tv_usec = 10000;
 
     int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 

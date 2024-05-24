@@ -4,10 +4,19 @@
 #include <vector>
 
 
+enum class SocksState 
+{
+    INIT,
+    HANDSHAKE,
+    RUN,
+    STOP
+};
+
+
 class SocksTunnelServer
 {
     public:
-        SocksTunnelServer(int serverfd, int serverPort);
+        SocksTunnelServer(int serverfd, int serverPort, int id=0);
         ~SocksTunnelServer();
 
         int init();
@@ -22,6 +31,18 @@ class SocksTunnelServer
         {
             return m_port;
         }
+        SocksState getState()
+        {
+            return m_state;
+        }
+        void setState(SocksState state)
+        {
+            m_state = state;
+        }
+        int getId()
+        {
+            return m_id;
+        }
 
     private:
         int m_serverfd;
@@ -29,6 +50,9 @@ class SocksTunnelServer
 
         uint32_t m_ipDst;
         uint16_t m_port;
+
+        SocksState m_state;
+        int m_id;
 
         std::string m_internalBuffer;
 };

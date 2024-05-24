@@ -23,13 +23,6 @@
 using namespace std;
 
 
-// handle sig_pipe that can crash the app otherwise
-void sig_handler(int signum) 
-{
-    
-}
-
-
 int read_variable_string(int sock, uint8_t *buffer, uint8_t max_sz) 
 {
     if(recv_sock(sock, (char*)buffer, 1) != 1 || buffer[0] > max_sz)
@@ -69,9 +62,11 @@ bool check_auth(int sock)
 //
 // SocksTunnelServer
 // 
-SocksTunnelServer::SocksTunnelServer(int serverfd, int serverPort)
+SocksTunnelServer::SocksTunnelServer(int serverfd, int serverPort, int id)
 : m_serverfd(serverfd)
 , m_serverPort(serverPort)
+, m_state(SocksState::INIT)
+, m_id(id)
 {
     m_internalBuffer.resize(BUF_SIZE);
 }
@@ -291,6 +286,7 @@ int SocksServer::handleConnection()
 
     signal(SIGPIPE, sig_handler);
 
+    int idSocksTunnelServer=0;
     while(!m_isStoped) 
     {
         uint32_t clientlen = sizeof(echoclient);
@@ -300,12 +296,13 @@ int SocksServer::handleConnection()
             // 
             // mode indirect
             //
-            std::unique_ptr<SocksTunnelServer> socksTunnelServer = std::make_unique<SocksTunnelServer>(clientsock, m_serverPort);
+            std::unique_ptr<SocksTunnelServer> socksTunnelServer = std::make_unique<SocksTunnelServer>(clientsock, m_serverPort, idSocksTunnelServer);
             int initResult = socksTunnelServer->init();
             if(initResult)
                 m_socksTunnelServers.push_back(std::move(socksTunnelServer));
             else
                 printf("SocksTunnelServer init failed");
+            idSocksTunnelServer++;
         }
     }
 
