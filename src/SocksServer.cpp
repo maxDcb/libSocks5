@@ -269,7 +269,7 @@ SocksServer::SocksServer(int serverPort)
 
 SocksServer::~SocksServer() 
 { 
-    m_isStoped=true;
+    stop();
     this->m_socks5Server->join();
 }
 
@@ -283,6 +283,8 @@ void SocksServer::launch()
 void SocksServer::stop()
 {
     m_isStoped=true;
+    shutdown(m_listen_sock, SHUT_RDWR);
+    close(m_listen_sock);
 }
 
 
@@ -323,9 +325,9 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
 int SocksServer::handleConnection()
 {
     struct sockaddr_in echoclient;
-    int listen_sock = createServerSocket(echoclient);
+    m_listen_sock = createServerSocket(echoclient);
     
-    if(listen_sock == -1) 
+    if(m_listen_sock == -1) 
     {
         std::cout << "[-] Failed to create server\n";
         return -1;
@@ -338,7 +340,7 @@ int SocksServer::handleConnection()
     {
         uint32_t clientlen = sizeof(echoclient);
         int clientsock;
-        if ((clientsock = accept(listen_sock, (struct sockaddr *) &echoclient, &clientlen)) > 0) 
+        if ((clientsock = accept(m_listen_sock, (struct sockaddr *) &echoclient, &clientlen)) > 0) 
         {
             // 
             // mode indirect
@@ -352,6 +354,11 @@ int SocksServer::handleConnection()
             idSocksTunnelServer++;
         }
     }
+
+    std::cout << "handleConnection stoped\n";
+
+    shutdown(m_listen_sock, SHUT_RDWR);
+    close(m_listen_sock);
 
     return 1;
 }

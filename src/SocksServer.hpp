@@ -76,6 +76,7 @@ private:
     int handleConnection();
 
     int m_serverPort;
+    int m_listen_sock;
 
     bool m_isStoped;
     std::unique_ptr<std::thread> m_socks5Server;
