@@ -2,6 +2,7 @@
 
 #include <thread>
 #include <vector>
+#include <mutex>
 
 
 enum class SocksState 
@@ -67,6 +68,15 @@ public:
 
     void launch();
     void stop();
+    void cleanTunnel();
+    bool isServerStoped()
+    {
+        return m_isStoped;
+    }
+    bool isServerLaunched()
+    {
+        return m_isLaunched;
+    }
 
     std::vector<std::unique_ptr<SocksTunnelServer>> m_socksTunnelServers;
 
@@ -78,8 +88,9 @@ private:
     int m_serverPort;
     int m_listen_sock;
 
+    bool m_isLaunched;
     bool m_isStoped;
     std::unique_ptr<std::thread> m_socks5Server;
 
-    
+    std::mutex m_mutex;    
 };

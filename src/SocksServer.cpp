@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <string>
+#include <algorithm>
 
 #include "SocksServer.hpp"
 #include "SocksDef.hpp"
@@ -263,9 +264,12 @@ int SocksTunnelServer::process(std::string& dataIn, std::string& dataOut)
 // 
 SocksServer::SocksServer(int serverPort)
 : m_serverPort(serverPort)
+, m_isStoped(true)
+, m_isLaunched(false)
 {
 
 }
+
 
 SocksServer::~SocksServer() 
 { 
@@ -335,6 +339,8 @@ int SocksServer::handleConnection()
 
     signal(SIGPIPE, sig_handler);
 
+    m_isStoped = false;
+    m_isLaunched = true;
     int idSocksTunnelServer=0;
     while(!m_isStoped) 
     {
@@ -348,7 +354,10 @@ int SocksServer::handleConnection()
             std::unique_ptr<SocksTunnelServer> socksTunnelServer = std::make_unique<SocksTunnelServer>(clientsock, m_serverPort, idSocksTunnelServer);
             int initResult = socksTunnelServer->init();
             if(initResult)
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
                 m_socksTunnelServers.push_back(std::move(socksTunnelServer));
+            }
             else
                 printf("SocksTunnelServer init failed");
             idSocksTunnelServer++;
@@ -363,3 +372,11 @@ int SocksServer::handleConnection()
     return 1;
 }
 
+
+void SocksServer::cleanTunnel()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_socksTunnelServers.erase(std::remove_if(m_socksTunnelServers.begin(), m_socksTunnelServers.end(),
+                             [](const std::unique_ptr<SocksTunnelServer>& ptr) { return ptr == nullptr; }),
+              m_socksTunnelServers.end());
+}
