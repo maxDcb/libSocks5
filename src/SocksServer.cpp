@@ -244,7 +244,7 @@ int SocksTunnelServer::process(std::string& dataIn, std::string& dataOut)
     if(dataIn.size()>0)
         send_sock(m_serverfd, dataIn.data(), dataIn.size());
 
-    ssize_t bytes_received;
+    int bytes_received;
     bool isDataAvailable;
 
     isDataAvailable = readAllDataFromSocket(m_serverfd, &m_internalBuffer[0], bytes_received);

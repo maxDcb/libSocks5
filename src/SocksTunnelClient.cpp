@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #elif _WIN32
+#include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #endif
 
@@ -78,13 +79,12 @@ int connect_to_host(uint32_t ip, uint16_t port)
     if (sockfd < 0)
         return -1;
 
-#ifdef __linux__
-
-    bzero((char *) &serv_addr, sizeof(serv_addr));
+    memset((char *) &serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET; 
     std::string ip_string = int_to_str(ip);
-    
 
+#ifdef __linux__   
+    
     get_host_lock.lock();
     server = gethostbyname(ip_string.c_str());
     if(!server) 
@@ -96,6 +96,8 @@ int connect_to_host(uint32_t ip, uint16_t port)
     get_host_lock.unlock();
 
 #elif _WIN32
+
+    inet_pton(AF_INET, ip_string.c_str(), &serv_addr.sin_addr.s_addr);
 
 #endif
     
@@ -149,10 +151,13 @@ int SocksTunnelClient::process(const std::string& dataIn, std::string& dataOut)
     if(dataIn.size()>0)
         send_sock(m_clientfd, dataIn.data(), dataIn.size());
 
-    ssize_t bytes_received;
+    int bytes_received;
     bool isDataAvailable;
 
     isDataAvailable = readAllDataFromSocket(m_clientfd, &m_internalBuffer[0], bytes_received);
+
+    std::cout << "isDataAvailable " << isDataAvailable << " " << "bytes_received " << bytes_received << std::endl;
+
     if(isDataAvailable && bytes_received <= 0)
         return -1;
 

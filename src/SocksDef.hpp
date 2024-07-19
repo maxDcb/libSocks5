@@ -77,7 +77,7 @@ inline int send_sock(int sock, const char *buffer, uint32_t size)
 }
 
 
-inline bool readAllDataFromSocket(int sockfd, char* buffer, ssize_t &bytes_received)
+inline bool readAllDataFromSocket(int sockfd, char* buffer, int &bytes_received)
 {
     fd_set readfds;
     bytes_received=0;
