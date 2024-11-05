@@ -137,18 +137,15 @@ int SocksTunnelServer::init()
     MethodIdentificationPacket packet;
     int read_size = recv_sock(m_serverfd, (char*)&packet, sizeof(MethodIdentificationPacket));
 
-    std::cout << "MethodIdentificationPacket " << std::to_string(read_size) << std::endl;
-
     if(read_size != sizeof(MethodIdentificationPacket) || packet.version != 5)
     {
+        std::cout << "Wrong version of proxychain, only proxychain5 is supported." << std::endl;
         shutdown(m_serverfd, SHUT_RDWR);
         close(m_serverfd);
         return 0;
     }
 
     read_size = recv_sock(m_serverfd, &m_internalBuffer[0], packet.nmethods);
-
-    std::cout << "packet.nmethods " << std::to_string(read_size) << std::endl;
 
     if(read_size != packet.nmethods)
     {
@@ -359,7 +356,7 @@ int SocksServer::handleConnection()
                 m_socksTunnelServers.push_back(std::move(socksTunnelServer));
             }
             else
-                printf("SocksTunnelServer init failed");
+                printf("SocksTunnelServer init failed\n");
             idSocksTunnelServer++;
         }
     }
