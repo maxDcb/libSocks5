@@ -77,7 +77,11 @@ int connect_to_host(uint32_t ip, uint16_t port)
     struct hostent *server;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
+    {
+        // int errorsocket = WSAGetLastError();
+        // std::cout << "errorsocket return code " << errorsocket << std::endl;
         return -1;
+    }
 
     memset((char *) &serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET; 
@@ -102,6 +106,7 @@ int connect_to_host(uint32_t ip, uint16_t port)
 #endif
     
     serv_addr.sin_port = htons(port);
+
     return !connect(sockfd, (const sockaddr*)&serv_addr, sizeof(serv_addr)) ? sockfd : -1;
 }
 
@@ -113,6 +118,12 @@ SocksTunnelClient::SocksTunnelClient(int id)
 : m_id(id)
 {
     m_internalBuffer.resize(BUF_SIZE);
+
+#ifdef __linux__
+#elif _WIN32
+    WSADATA wsaData;
+    int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+#endif
 }
 
 
@@ -123,6 +134,7 @@ SocksTunnelClient::~SocksTunnelClient()
 #ifdef __linux__
     close(m_clientfd);    
 #elif _WIN32
+    WSACleanup();
     closesocket(m_clientfd);    
 #endif
 }
