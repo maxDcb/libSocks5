@@ -309,6 +309,7 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     // Bind the server socket 
     if (bind(serversock, (struct sockaddr *) &echoserver, sizeof(echoserver)) < 0) 
     {
+        close(serversock);
         std::cout << "[-] Bind error.\n";
         return -1;
     }
@@ -316,6 +317,7 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     // Listen on the server socket 
     if (listen(serversock, MAXPENDING) < 0) 
     {
+        close(serversock);
         std::cout << "[-] Listen error.\n";
         return -1;
     }
