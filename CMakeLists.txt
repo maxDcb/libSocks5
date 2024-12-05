@@ -5,16 +5,10 @@ set(DEFAULT_BUILD_TYPE "Release")
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(WIN32)
-    set(SOURCE_FILES
-    src/SocksTunnelClient.cpp
-    )
-else()
-    set(SOURCE_FILES
-    src/SocksServer.cpp
-    src/SocksTunnelClient.cpp
-    )
-endif()
+set(SOURCE_FILES
+src/SocksServer.cpp
+src/SocksTunnelClient.cpp
+)
 
 include_directories(../src)
 
@@ -24,7 +18,5 @@ set_property(TARGET ${PROJECT_NAME} PROPERTY
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-if(WIN32)
-else()
-    add_subdirectory(tests)
-endif()
+
+add_subdirectory(tests)

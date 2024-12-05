@@ -12,7 +12,6 @@ int main(int argc, char *argv[])
     SocksServer socksServer(1080);
     socksServer.launch();
 
-    
     while(1)
     {
         for(int i=0; i<socksServer.m_socksTunnelServers.size(); i++)

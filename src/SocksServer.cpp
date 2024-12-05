@@ -1,7 +1,15 @@
 #include <cstring>
 #include <signal.h>
 
+#ifdef __linux__
+#include <unistd.h>
+#include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#elif _WIN32
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#endif
 
 #include <iostream>
 #include <string>
@@ -21,40 +29,69 @@
 #endif
 
 
+#ifdef __linux__
+#elif _WIN32
+    #pragma pack(push, 1)
+#endif
+
 // Handshake
 struct MethodIdentificationPacket 
 {
     uint8_t version, nmethods;
     // uint8_t methods[nmethods];
-} __attribute__((packed));
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
 
 
 struct MethodSelectionPacket 
 {
     uint8_t version, method;
     MethodSelectionPacket(uint8_t met) : version(5), method(met) {}
-} __attribute__((packed));
-
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
 
 // Requests
 struct SOCKS5RequestHeader 
 {
     uint8_t version, cmd, rsv /* = 0x00 */, atyp;
-} __attribute__((packed));
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
 
 
 struct SOCK5IP4RequestBody 
 {
     uint32_t ip_dst;
     uint16_t port;
-} __attribute__((packed));
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
 
 
 struct SOCK5DNameRequestBody 
 {
     uint8_t length;
     // uint8_t dname[length]; 
-} __attribute__((packed));
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
 
 
 // Responses
@@ -65,7 +102,18 @@ struct SOCKS5Response
     uint16_t port_src;
     
     SOCKS5Response(bool succeded = true) : version(5), cmd(succeded ? RESP_SUCCEDED : RESP_GEN_ERROR), rsv(0), atyp(ATYP_IPV4) { }
-} __attribute__((packed));
+} 
+#ifdef __linux__
+    __attribute__((packed));
+#elif _WIN32
+    ;
+#endif
+
+
+#ifdef __linux__
+#elif _WIN32
+    #pragma pack(pop)
+#endif
 
 
 using namespace std;
@@ -122,8 +170,14 @@ SocksTunnelServer::SocksTunnelServer(int serverfd, int serverPort, int id)
 
 SocksTunnelServer::~SocksTunnelServer()
 {
-    shutdown(m_serverfd, SHUT_RDWR);
-    close(m_serverfd);
+    #ifdef __linux__
+        shutdown(m_serverfd, SHUT_RDWR);
+        m_serverfd=-1;
+        close(m_serverfd);    
+    #elif _WIN32
+        closesocket(m_serverfd);    
+        m_serverfd=-1;
+    #endif
 }
 
 
@@ -140,8 +194,14 @@ int SocksTunnelServer::init()
     if(read_size != sizeof(MethodIdentificationPacket) || packet.version != 5)
     {
         std::cout << "Wrong version of proxychain, only proxychain5 is supported." << std::endl;
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
@@ -149,8 +209,14 @@ int SocksTunnelServer::init()
 
     if(read_size != packet.nmethods)
     {
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
@@ -171,16 +237,28 @@ int SocksTunnelServer::init()
 
     if(write_size != sizeof(MethodSelectionPacket) || methode_response.method == METHOD_NOTAVAILABLE)
     {
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
     if(methode_response.method == METHOD_AUTH)
         if(!check_auth(m_serverfd))
         {
-            shutdown(m_serverfd, SHUT_RDWR);
-            close(m_serverfd);
+            #ifdef __linux__
+                shutdown(m_serverfd, SHUT_RDWR);
+                m_serverfd=-1;
+                close(m_serverfd);    
+            #elif _WIN32
+                closesocket(m_serverfd);    
+                m_serverfd=-1;
+            #endif
             return 0;
         }
 
@@ -192,8 +270,14 @@ int SocksTunnelServer::init()
 
     if(read_size != sizeof(SOCKS5RequestHeader) || header.version != 5 || header.cmd != CMD_CONNECT || header.rsv != 0)
     {
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
@@ -201,8 +285,14 @@ int SocksTunnelServer::init()
 
     if(header.atyp != ATYP_IPV4)
     {
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
@@ -213,8 +303,14 @@ int SocksTunnelServer::init()
 
     if(read_size != sizeof(SOCK5IP4RequestBody))
     {
-        shutdown(m_serverfd, SHUT_RDWR);
-        close(m_serverfd);
+        #ifdef __linux__
+            shutdown(m_serverfd, SHUT_RDWR);
+            m_serverfd=-1;
+            close(m_serverfd);    
+        #elif _WIN32
+            closesocket(m_serverfd);    
+            m_serverfd=-1;
+        #endif
         return 0;
     }
 
@@ -264,7 +360,11 @@ SocksServer::SocksServer(int serverPort)
 , m_isStoped(true)
 , m_isLaunched(false)
 {
-
+    #ifdef __linux__
+    #elif _WIN32
+        WSADATA wsaData;
+        int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+    #endif
 }
 
 
@@ -284,8 +384,14 @@ void SocksServer::launch()
 void SocksServer::stop()
 {
     m_isStoped=true;
-    shutdown(m_listen_sock, SHUT_RDWR);
-    close(m_listen_sock);
+    #ifdef __linux__
+        shutdown(m_listen_sock, SHUT_RDWR);
+        m_listen_sock=-1;
+        close(m_listen_sock);    
+    #elif _WIN32
+        closesocket(m_listen_sock);    
+        m_listen_sock=-1;
+    #endif
 }
 
 
@@ -309,7 +415,11 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     // Bind the server socket 
     if (bind(serversock, (struct sockaddr *) &echoserver, sizeof(echoserver)) < 0) 
     {
-        close(serversock);
+        #ifdef __linux__
+            close(serversock);
+        #elif _WIN32
+            closesocket(serversock);
+        #endif
         std::cout << "[-] Bind error.\n";
         return -1;
     }
@@ -317,7 +427,11 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     // Listen on the server socket 
     if (listen(serversock, MAXPENDING) < 0) 
     {
-        close(serversock);
+        #ifdef __linux__
+            close(serversock);
+        #elif _WIN32
+            closesocket(serversock);
+        #endif
         std::cout << "[-] Listen error.\n";
         return -1;
     }
@@ -336,16 +450,24 @@ int SocksServer::handleConnection()
         return -1;
     }
 
-    signal(SIGPIPE, sig_handler);
+    #ifdef __linux__
+        signal(SIGPIPE, sig_handler);  
+    #elif _WIN32  
+    #endif
+
 
     m_isStoped = false;
     m_isLaunched = true;
     int idSocksTunnelServer=0;
     while(!m_isStoped) 
     {
-        uint32_t clientlen = sizeof(echoclient);
+        int clientlen = sizeof(echoclient);
         int clientsock;
+        #ifdef __linux__
+        if ((clientsock = accept(m_listen_sock, (struct sockaddr *) &echoclient, (uint*)&clientlen)) > 0) 
+        #elif _WIN32
         if ((clientsock = accept(m_listen_sock, (struct sockaddr *) &echoclient, &clientlen)) > 0) 
+        #endif 
         {
             // 
             // mode indirect
@@ -365,8 +487,14 @@ int SocksServer::handleConnection()
 
     std::cout << "handleConnection stoped\n";
 
-    shutdown(m_listen_sock, SHUT_RDWR);
-    close(m_listen_sock);
+    #ifdef __linux__
+        shutdown(m_listen_sock, SHUT_RDWR);
+        m_listen_sock=-1;
+        close(m_listen_sock);    
+    #elif _WIN32
+        closesocket(m_listen_sock);    
+        m_listen_sock=-1;
+    #endif
 
     return 1;
 }
