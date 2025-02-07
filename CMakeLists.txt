@@ -18,5 +18,9 @@ set_property(TARGET ${PROJECT_NAME} PROPERTY
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+if(WIN32)
+else()
+	target_link_libraries(${PROJECT_NAME} pthread)
+endif()
 
 add_subdirectory(tests)
