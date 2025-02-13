@@ -168,7 +168,7 @@ int SocksTunnelClient::process(const std::string& dataIn, std::string& dataOut)
 
     isDataAvailable = readAllDataFromSocket(m_clientfd, &m_internalBuffer[0], bytes_received);
 
-    std::cout << "isDataAvailable " << isDataAvailable << " " << "bytes_received " << bytes_received << std::endl;
+    // std::cout << "isDataAvailable " << isDataAvailable << " " << "bytes_received " << bytes_received << std::endl;
 
     if(isDataAvailable && bytes_received <= 0)
         return -1;

@@ -96,10 +96,10 @@ inline bool readAllDataFromSocket(int sockfd, char* buffer, int &bytes_received)
     bool isDataAvailable=false;
     if (activity < 0) 
     {
-        perror("select error");
+        // perror("select error");
     } else if (activity == 0) 
     {
-        printf("Timeout: No data available to read\n");
+        // printf("Timeout: No data available to read\n");
     } 
     else 
     {
@@ -110,15 +110,15 @@ inline bool readAllDataFromSocket(int sockfd, char* buffer, int &bytes_received)
             bytes_received = recv(sockfd, buffer, BUF_SIZE, 0);
             if (bytes_received == -1) 
             {
-                perror("recv failed");
+                // perror("recv failed");
             } 
             else if (bytes_received == 0) 
             {
-                printf("Connection closed by peer\n");
+                // printf("Connection closed by peer\n");
             } 
             else 
             {
-                printf("Received: %d\n", bytes_received);
+                // printf("Received: %d\n", bytes_received);
             }
         }
     }

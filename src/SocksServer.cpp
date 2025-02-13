@@ -183,7 +183,8 @@ SocksTunnelServer::~SocksTunnelServer()
 
 int SocksTunnelServer::init()
 {
-    std::cout << "handle_connection" << std::endl;
+    // std::cout << "handle_connection" << std::endl;
+    std::cout << "[+] SocksTunnelServer init" << std::endl;   
 
     // Here we need to split ! 
     // we are in the TeamServer
@@ -193,7 +194,7 @@ int SocksTunnelServer::init()
 
     if(read_size != sizeof(MethodIdentificationPacket) || packet.version != 5)
     {
-        std::cout << "Wrong version of proxychain, only proxychain5 is supported." << std::endl;
+        std::cout << "[-] Wrong version of proxychain, only proxychain5 is supported." << std::endl;
         #ifdef __linux__
             shutdown(m_serverfd, SHUT_RDWR);
             m_serverfd=-1;
@@ -233,7 +234,7 @@ int SocksTunnelServer::init()
 
     int write_size = send_sock(m_serverfd, (const char*)&methode_response, sizeof(MethodSelectionPacket)) ;
 
-    std::cout << "MethodSelectionPacket " << std::to_string(write_size) << std::endl;
+    // std::cout << "MethodSelectionPacket " << std::to_string(write_size) << std::endl;
 
     if(write_size != sizeof(MethodSelectionPacket) || methode_response.method == METHOD_NOTAVAILABLE)
     {
@@ -263,7 +264,7 @@ int SocksTunnelServer::init()
         }
 
 
-    std::cout << "[+] HandShak ok !!! " << std::endl;   
+    std::cout << "[+] HandShake ok" << std::endl;   
 
     SOCKS5RequestHeader header;
     read_size = recv_sock(m_serverfd, (char*)&header, sizeof(SOCKS5RequestHeader));
@@ -281,7 +282,7 @@ int SocksTunnelServer::init()
         return 0;
     }
 
-    std::cout << "SOCKS5RequestHeader " << std::to_string(read_size) << std::endl;
+    // std::cout << "SOCKS5RequestHeader " << std::to_string(read_size) << std::endl;
 
     if(header.atyp != ATYP_IPV4)
     {
@@ -299,7 +300,7 @@ int SocksTunnelServer::init()
     SOCK5IP4RequestBody req;
     read_size = recv_sock(m_serverfd, (char*)&req, sizeof(SOCK5IP4RequestBody));
 
-    std::cout << "SOCK5IP4RequestBody " << std::to_string(read_size) << std::endl;
+    // std::cout << "SOCK5IP4RequestBody " << std::to_string(read_size) << std::endl;
 
     if(read_size != sizeof(SOCK5IP4RequestBody))
     {
@@ -371,13 +372,12 @@ SocksServer::SocksServer(int serverPort)
 SocksServer::~SocksServer() 
 { 
     stop();
-    this->m_socks5Server->join();
 }
 
 
 void SocksServer::launch()
 {
-    this->m_socks5Server = std::make_unique<std::thread>(&SocksServer::handleConnection, this);
+    m_socks5Server = std::make_unique<std::thread>(&SocksServer::handleConnection, this);
 }
 
 
@@ -392,6 +392,12 @@ void SocksServer::stop()
         closesocket(m_listen_sock);    
         m_listen_sock=-1;
     #endif
+
+    if(m_socks5Server)
+    {
+        m_socks5Server->join();
+        m_socks5Server.reset();
+    }
 }
 
 
@@ -403,6 +409,19 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     if ((serversock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) 
     {
         std::cout << "[-] Could not create socket.\n";
+        return -1;
+    }
+
+    // Set the SO_REUSEADDR option
+    int opt = 1;
+    if (setsockopt(serversock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) 
+    {
+        std::cout << "[-] Could not set socket option.\n";
+        #ifdef __linux__
+            close(serversock);
+        #elif _WIN32
+            closesocket(serversock);
+        #endif
         return -1;
     }
 
@@ -480,12 +499,14 @@ int SocksServer::handleConnection()
                 m_socksTunnelServers.push_back(std::move(socksTunnelServer));
             }
             else
-                printf("SocksTunnelServer init failed\n");
+            {
+                // printf("SocksTunnelServer init failed\n");
+            }
             idSocksTunnelServer++;
         }
     }
 
-    std::cout << "handleConnection stoped\n";
+    std::cout << "[+] handleConnection stoped\n";
 
     #ifdef __linux__
         shutdown(m_listen_sock, SHUT_RDWR);
