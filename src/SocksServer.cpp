@@ -414,7 +414,7 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
 
     // Set the SO_REUSEADDR option
     int opt = 1;
-    if (setsockopt(serversock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) 
+    if (setsockopt(serversock, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt)) < 0) 
     {
         std::cout << "[-] Could not set socket option.\n";
         #ifdef __linux__
