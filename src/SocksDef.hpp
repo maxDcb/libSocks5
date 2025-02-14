@@ -7,7 +7,7 @@
 #endif
 
 
-#define BUF_SIZE 256
+#define BUF_SIZE 2048
 
 // Command constants 
 #define CMD_CONNECT         1
