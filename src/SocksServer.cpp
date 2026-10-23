@@ -464,7 +464,7 @@ int SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     // Construct the server sockaddr_in structure 
     memset(&echoserver, 0, sizeof(echoserver));       // Clear struct 
     echoserver.sin_family = AF_INET;                  // Internet/IP 
-    echoserver.sin_addr.s_addr = htonl(INADDR_ANY);   // Incoming addr 
+    echoserver.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // Local clients only
     echoserver.sin_port = htons(m_serverPort);       // server port 
 
     // Bind the server socket 

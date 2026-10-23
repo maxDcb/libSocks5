@@ -8,6 +8,8 @@
 
 #ifdef __linux__
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -251,6 +253,42 @@ public:
     SocksServer server;
 };
 
+void testOnlyAcceptsLoopbackConnections()
+{
+#ifdef __linux__
+    RunningSocksServer running;
+    ifaddrs* interfaces = nullptr;
+    require(::getifaddrs(&interfaces) == 0, "getifaddrs failed");
+    std::string otherLocalAddress;
+    for (ifaddrs* current = interfaces; current != nullptr; current = current->ifa_next)
+    {
+        if (current->ifa_addr == nullptr || current->ifa_addr->sa_family != AF_INET ||
+            (current->ifa_flags & IFF_LOOPBACK) != 0)
+            continue;
+        char address[INET_ADDRSTRLEN]{};
+        if (::inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(current->ifa_addr)->sin_addr,
+                       address, sizeof(address)) != nullptr)
+        {
+            otherLocalAddress = address;
+            break;
+        }
+    }
+    ::freeifaddrs(interfaces);
+    if (otherLocalAddress.empty())
+        return;
+
+    const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+    require(client >= 0, "non-loopback client socket failed");
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<uint16_t>(running.port));
+    require(::inet_pton(AF_INET, otherLocalAddress.c_str(), &address.sin_addr) == 1, "inet_pton failed");
+    const int connected = ::connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    closeSocket(client);
+    require(connected != 0, "SOCKS listener accepted a non-loopback connection");
+#endif
+}
+
 int connectAndNegotiateNoAuth(RunningSocksServer& running)
 {
     const int client = connectLocal(running.port);
@@ -374,6 +412,7 @@ int main()
 {
     SocketRuntime runtime;
     testNoAcceptableMethod();
+    testOnlyAcceptsLoopbackConnections();
     testIpv4ConnectQueuesTunnelAndSuccessReply();
     testDomainNameConnectQueuesTunnelAndSuccessReply();
     testDomainNameConnectCanReturnBeaconResolutionFailure();
