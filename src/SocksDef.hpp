@@ -12,8 +12,20 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 
 static constexpr std::size_t BUF_SIZE = 2048;
+static constexpr int SOCKS_IO_TIMEOUT_MS = 5000;
+
+#ifdef _WIN32
+using socket_t = SOCKET;
+static constexpr socket_t INVALID_SOCKET_VALUE = INVALID_SOCKET;
+#else
+using socket_t = int;
+static constexpr socket_t INVALID_SOCKET_VALUE = -1;
+#endif
 
 // Command constants
 enum class Command : uint8_t
@@ -77,43 +89,60 @@ inline void sig_handler(int signum)
 class SocketHandle
 {
 public:
-    SocketHandle() : m_fd(-1) {}
-    explicit SocketHandle(int fd) : m_fd(fd) {}
+    SocketHandle() : m_fd(INVALID_SOCKET_VALUE) {}
+    explicit SocketHandle(socket_t fd) : m_fd(fd) {}
     ~SocketHandle() { reset(); }
     SocketHandle(const SocketHandle&) = delete;
     SocketHandle& operator=(const SocketHandle&) = delete;
-    SocketHandle(SocketHandle&& other) noexcept : m_fd(other.m_fd) { other.m_fd = -1; }
+    SocketHandle(SocketHandle&& other) noexcept
+        : m_fd(other.m_fd.exchange(INVALID_SOCKET_VALUE)) {}
     SocketHandle& operator=(SocketHandle&& other) noexcept
     {
         if(this != &other)
         {
             reset();
-            m_fd = other.m_fd;
-            other.m_fd = -1;
+            m_fd.store(other.m_fd.exchange(INVALID_SOCKET_VALUE));
         }
         return *this;
     }
-    int get() const { return m_fd; }
-    void reset(int fd = -1)
+    socket_t get() const { return m_fd.load(); }
+    void reset(socket_t fd = INVALID_SOCKET_VALUE)
     {
-        if(m_fd != -1)
+        const socket_t old = m_fd.exchange(fd);
+        if(old != INVALID_SOCKET_VALUE)
         {
 #ifdef __linux__
-            ::shutdown(m_fd, SHUT_RDWR);
-            ::close(m_fd);
+            ::shutdown(old, SHUT_RDWR);
+            ::close(old);
 #elif _WIN32
-            ::shutdown(m_fd, SHUT_RDWR);
-            ::closesocket(m_fd);
+            ::shutdown(old, SHUT_RDWR);
+            ::closesocket(old);
 #endif
         }
-        m_fd = fd;
     }
 private:
-    int m_fd;
+    std::atomic<socket_t> m_fd;
 };
 
+inline bool configure_socket_io_timeouts(socket_t sock, int timeoutMs = SOCKS_IO_TIMEOUT_MS)
+{
+#ifdef _WIN32
+    const DWORD timeout = static_cast<DWORD>(timeoutMs);
+    return setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
+                      reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == 0 &&
+           setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                      reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == 0;
+#else
+    timeval timeout{};
+    timeout.tv_sec = timeoutMs / 1000;
+    timeout.tv_usec = (timeoutMs % 1000) * 1000;
+    return setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0 &&
+           setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
+#endif
+}
 
-inline int recv_sock(int sock, char *buffer, uint32_t size) 
+
+inline int recv_sock(socket_t sock, char *buffer, uint32_t size)
 {
     int index = 0, ret;
     while(size) 
@@ -128,17 +157,45 @@ inline int recv_sock(int sock, char *buffer, uint32_t size)
 }
 
 
-inline int send_sock(int sock, const char *buffer, uint32_t size) 
+inline int send_sock(socket_t sock, const char *buffer, uint32_t size)
 {
-    int index = 0, ret;
-    while(size) 
+    uint32_t index = 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(SOCKS_IO_TIMEOUT_MS);
+    while(size)
     {
-        if((ret = send(sock, &buffer[index], size, 0)) <= 0)
-            return (!ret) ? index : -1;
-        index += ret;
-        size -= ret;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+            return -1;
+
+        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+        timeval timeout{};
+        timeout.tv_sec = static_cast<long>(remaining.count() / 1000000);
+        timeout.tv_usec = static_cast<long>(remaining.count() % 1000000);
+
+        fd_set writeFds;
+        FD_ZERO(&writeFds);
+        FD_SET(sock, &writeFds);
+#ifdef _WIN32
+        const int ready = select(0, nullptr, &writeFds, nullptr, &timeout);
+#else
+        const int ready = select(sock + 1, nullptr, &writeFds, nullptr, &timeout);
+#endif
+        if (ready <= 0)
+            return -1;
+
+        const int chunk = static_cast<int>(std::min<uint32_t>(size, 16 * 1024));
+#ifdef __linux__
+        const int ret = static_cast<int>(send(sock, &buffer[index], chunk, MSG_NOSIGNAL));
+#else
+        const int ret = send(sock, &buffer[index], chunk, 0);
+#endif
+        if(ret <= 0)
+            return ret == 0 ? static_cast<int>(index) : -1;
+        index += static_cast<uint32_t>(ret);
+        size -= static_cast<uint32_t>(ret);
     }
-    return index;
+    return static_cast<int>(index);
 }
 
 // Read all data that is currently available *now* (best-effort), without changing blocking mode.
@@ -152,18 +209,16 @@ inline int send_sock(int sock, const char *buffer, uint32_t size)
 // - Uses a max_bytes cap to prevent unbounded memory growth.
 
 #include <string>
-#include <algorithm>
-
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
   #pragma comment(lib, "Ws2_32.lib")
-  using sock_t = SOCKET;
+  using sock_t = socket_t;
 #else
   #include <poll.h>
   #include <sys/socket.h>
   #include <errno.h>
-  using sock_t = int;
+  using sock_t = socket_t;
 #endif
 
 enum class DrainStatus { ReadSome, NoData, Disconnected, Error, Truncated };

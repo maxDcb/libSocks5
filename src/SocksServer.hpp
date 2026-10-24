@@ -20,7 +20,7 @@ enum class SocksState
 class SocksTunnelServer
 {
     public:
-        SocksTunnelServer(int serverfd, int serverPort, int id=0);
+        SocksTunnelServer(socket_t serverfd, int serverPort, int id=0);
         ~SocksTunnelServer();
 
         int init();
@@ -97,8 +97,7 @@ public:
     void resetTunnel(std::size_t idx);
 
 private:
-    int createListenSocket(struct sockaddr_in &echoclient) ;
-    int createServerSocket(struct sockaddr_in &echoclient);
+    socket_t createServerSocket(struct sockaddr_in &echoclient);
     int handleConnection();
 
     int m_serverPort;
@@ -106,6 +105,7 @@ private:
 
     std::atomic_bool m_isLaunched;
     std::atomic_bool m_isStoped;
+    bool m_socketRuntimeReady;
     std::unique_ptr<std::thread> m_socks5Server;
 
     std::mutex m_mutex;

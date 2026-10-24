@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -410,14 +411,31 @@ void testTunnelClientResolvesHostnameLocally()
 
 int main()
 {
-    SocketRuntime runtime;
-    testNoAcceptableMethod();
-    testOnlyAcceptsLoopbackConnections();
-    testIpv4ConnectQueuesTunnelAndSuccessReply();
-    testDomainNameConnectQueuesTunnelAndSuccessReply();
-    testDomainNameConnectCanReturnBeaconResolutionFailure();
-    testIpv6ConnectReturnsExplicitUnsupportedAddress();
-    testUnsupportedCommandReturnsExplicitFailure();
-    testTunnelClientResolvesHostnameLocally();
-    return 0;
+    const char* currentTest = "initialization";
+    try
+    {
+        SocketRuntime runtime;
+        currentTest = "testNoAcceptableMethod";
+        testNoAcceptableMethod();
+        currentTest = "testOnlyAcceptsLoopbackConnections";
+        testOnlyAcceptsLoopbackConnections();
+        currentTest = "testIpv4ConnectQueuesTunnelAndSuccessReply";
+        testIpv4ConnectQueuesTunnelAndSuccessReply();
+        currentTest = "testDomainNameConnectQueuesTunnelAndSuccessReply";
+        testDomainNameConnectQueuesTunnelAndSuccessReply();
+        currentTest = "testDomainNameConnectCanReturnBeaconResolutionFailure";
+        testDomainNameConnectCanReturnBeaconResolutionFailure();
+        currentTest = "testIpv6ConnectReturnsExplicitUnsupportedAddress";
+        testIpv6ConnectReturnsExplicitUnsupportedAddress();
+        currentTest = "testUnsupportedCommandReturnsExplicitFailure";
+        testUnsupportedCommandReturnsExplicitFailure();
+        currentTest = "testTunnelClientResolvesHostnameLocally";
+        testTunnelClientResolvesHostnameLocally();
+        return 0;
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << currentTest << ": " << error.what() << std::endl;
+        return 1;
+    }
 }

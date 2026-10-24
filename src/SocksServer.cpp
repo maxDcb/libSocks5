@@ -129,7 +129,7 @@ namespace
 {
 constexpr int SOCKS_HANDSHAKE_TIMEOUT_MS = 5000;
 
-int recv_sock_timeout(int sock, char* buffer, uint32_t size, int timeoutMs)
+int recv_sock_timeout(socket_t sock, char* buffer, uint32_t size, int timeoutMs)
 {
     int index = 0;
     while(size)
@@ -160,14 +160,14 @@ int recv_sock_timeout(int sock, char* buffer, uint32_t size, int timeoutMs)
     return index;
 }
 
-bool send_socks_response(int sock, Response code, uint16_t port = 0)
+bool send_socks_response(socket_t sock, Response code, uint16_t port = 0)
 {
     SOCKS5Response response(code);
     response.port_src = htons(port);
     return send_sock(sock, reinterpret_cast<const char*>(&response), sizeof(SOCKS5Response)) == sizeof(SOCKS5Response);
 }
 
-bool send_auth_response(int sock, uint8_t status)
+bool send_auth_response(socket_t sock, uint8_t status)
 {
     uint8_t buffer[2] = {1, status};
     return send_sock(sock, reinterpret_cast<const char*>(buffer), sizeof(buffer)) == sizeof(buffer);
@@ -175,7 +175,7 @@ bool send_auth_response(int sock, uint8_t status)
 } // namespace
 
 
-int read_variable_string(int sock, uint8_t *buffer, uint8_t max_sz) 
+int read_variable_string(socket_t sock, uint8_t *buffer, uint8_t max_sz)
 {
     if(recv_sock_timeout(sock, (char*)buffer, 1, SOCKS_HANDSHAKE_TIMEOUT_MS) != 1 || buffer[0] > max_sz)
         return false;
@@ -188,7 +188,7 @@ int read_variable_string(int sock, uint8_t *buffer, uint8_t max_sz)
 }
 
 
-bool check_auth(int sock)
+bool check_auth(socket_t sock)
 {
     uint8_t buffer[128];
     if(recv_sock_timeout(sock, (char*)buffer, 1, SOCKS_HANDSHAKE_TIMEOUT_MS) != 1 || buffer[0] != 1)
@@ -221,7 +221,7 @@ bool check_auth(int sock)
 //
 // SocksTunnelServer
 // 
-SocksTunnelServer::SocksTunnelServer(int serverfd, int serverPort, int id)
+SocksTunnelServer::SocksTunnelServer(socket_t serverfd, int serverPort, int id)
 : m_serverfd(serverfd)
 , m_serverPort(serverPort)
 , m_addressType(AddressType::IPv4)
@@ -297,13 +297,6 @@ int SocksTunnelServer::init()
         return 0;
     }
 
-    if(header.cmd != static_cast<uint8_t>(Command::Connect))
-    {
-        send_socks_response(m_serverfd.get(), Response::CommandNotSupported);
-        m_serverfd.reset();
-        return 0;
-    }
-
     if(header.atyp == static_cast<uint8_t>(AddressType::IPv4))
     {
         SOCK5IP4RequestBody req;
@@ -319,6 +312,12 @@ int SocksTunnelServer::init()
         m_ipDst = req.ip_dst;
         m_destinationHost.clear();
         m_port = req.port;
+        if(header.cmd != static_cast<uint8_t>(Command::Connect))
+        {
+            send_socks_response(m_serverfd.get(), Response::CommandNotSupported);
+            m_serverfd.reset();
+            return 0;
+        }
         return 1;
     }
 
@@ -352,6 +351,12 @@ int SocksTunnelServer::init()
         m_ipDst = 0;
         m_destinationHost.assign(m_internalBuffer.data(), body.length);
         m_port = port;
+        if(header.cmd != static_cast<uint8_t>(Command::Connect))
+        {
+            send_socks_response(m_serverfd.get(), Response::CommandNotSupported);
+            m_serverfd.reset();
+            return 0;
+        }
         return 1;
     }
 
@@ -370,23 +375,23 @@ int SocksTunnelServer::init()
 
 int SocksTunnelServer::finishHandshake()
 {
-    send_socks_response(m_serverfd.get(), Response::Succeeded, static_cast<uint16_t>(m_serverPort));
-
-    return 1;
+    return send_socks_response(m_serverfd.get(), Response::Succeeded,
+                               static_cast<uint16_t>(m_serverPort)) ? 1 : 0;
 }
 
 
 int SocksTunnelServer::failHandshake(Response response)
 {
-    send_socks_response(m_serverfd.get(), response);
-    return 1;
+    return send_socks_response(m_serverfd.get(), response) ? 1 : 0;
 }
 
 
 int SocksTunnelServer::process(std::string& dataIn, std::string& dataOut)
 {
-    if(dataIn.size()>0)
-        send_sock(m_serverfd.get(), dataIn.data(), dataIn.size());
+    if(!dataIn.empty() &&
+       send_sock(m_serverfd.get(), dataIn.data(), static_cast<uint32_t>(dataIn.size())) !=
+           static_cast<int>(dataIn.size()))
+        return -1;
 
     DrainStatus status = readAllAvailableNow_(m_serverfd.get(), dataOut, 0);
     if(status == DrainStatus::Error || status == DrainStatus::Disconnected)
@@ -403,13 +408,14 @@ int SocksTunnelServer::process(std::string& dataIn, std::string& dataOut)
 // 
 SocksServer::SocksServer(int serverPort)
 : m_serverPort(serverPort)
-, m_isStoped(true)
 , m_isLaunched(false)
+, m_isStoped(true)
+, m_socketRuntimeReady(true)
 {
     #ifdef __linux__
     #elif _WIN32
         WSADATA wsaData;
-        int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+        m_socketRuntimeReady = WSAStartup(MAKEWORD(2,2), &wsaData) == 0;
     #endif
 }
 
@@ -417,18 +423,26 @@ SocksServer::SocksServer(int serverPort)
 SocksServer::~SocksServer() 
 { 
     stop();
+#ifdef _WIN32
+    if (m_socketRuntimeReady)
+        WSACleanup();
+#endif
 }
 
 
 void SocksServer::launch()
 {
+    if (m_socks5Server || !m_socketRuntimeReady)
+        return;
+    m_isStoped.store(false);
+    m_isLaunched.store(false);
     m_socks5Server = std::make_unique<std::thread>(&SocksServer::handleConnection, this);
 }
 
 
 void SocksServer::stop()
 {
-    m_isStoped=true;
+    m_isStoped.store(true);
     m_listen_sock.reset();
 
     if(m_socks5Server)
@@ -436,15 +450,16 @@ void SocksServer::stop()
         m_socks5Server->join();
         m_socks5Server.reset();
     }
+    m_isLaunched.store(false);
 }
 
 
-int SocksServer::createServerSocket(struct sockaddr_in &echoclient) 
+socket_t SocksServer::createServerSocket(struct sockaddr_in &echoclient)
 {
-    int serversock;
+    socket_t serversock;
     struct sockaddr_in echoserver;
 
-    if ((serversock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) 
+    if ((serversock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET_VALUE)
     {
         return -1;
     }
@@ -497,9 +512,17 @@ int SocksServer::handleConnection()
     struct sockaddr_in echoclient;
     m_listen_sock.reset(createServerSocket(echoclient));
 
-    if(m_listen_sock.get() == -1)
+    if(m_listen_sock.get() == INVALID_SOCKET_VALUE)
     {
+        m_isStoped.store(true);
+        m_isLaunched.store(false);
         return -1;
+    }
+
+    if (m_isStoped.load())
+    {
+        m_listen_sock.reset();
+        return 0;
     }
 
 #ifdef __linux__
@@ -507,19 +530,19 @@ int SocksServer::handleConnection()
 #elif _WIN32
 #endif
 
-    m_isStoped = false;
-    m_isLaunched = true;
+    m_isLaunched.store(true);
     int idSocksTunnelServer=0;
     while(!m_isStoped)
     {
         int clientlen = sizeof(echoclient);
-        int clientsock;
+        socket_t clientsock = INVALID_SOCKET_VALUE;
 #ifdef __linux__
-        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, (uint*)&clientlen)) > 0)
+        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, (uint*)&clientlen)) != INVALID_SOCKET_VALUE)
 #elif _WIN32
-        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, &clientlen)) > 0)
+        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, &clientlen)) != INVALID_SOCKET_VALUE)
 #endif
         {
+            configure_socket_io_timeouts(clientsock);
             std::unique_ptr<SocksTunnelServer> socksTunnelServer = std::make_unique<SocksTunnelServer>(clientsock, m_serverPort, idSocksTunnelServer);
             int initResult = socksTunnelServer->init();
             if(initResult)
@@ -531,6 +554,8 @@ int SocksServer::handleConnection()
         }
     }
     m_listen_sock.reset();
+    m_isLaunched.store(false);
+    m_isStoped.store(true);
 
     return 1;
 }

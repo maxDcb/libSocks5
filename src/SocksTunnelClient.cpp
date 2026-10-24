@@ -1,4 +1,10 @@
 #include <cstring>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <memory>
+#include <thread>
+#include <vector>
 
 
 #include <signal.h>
@@ -6,6 +12,8 @@
 #ifdef __linux__
 #include <unistd.h>
 #include <netdb.h>
+#include <fcntl.h>
+#include <errno.h>
 #elif _WIN32
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -33,7 +41,7 @@ std::string int_to_str(uint32_t ip)
     return oss.str();
 }
 
-void close_socket(int sock)
+void close_socket(socket_t sock)
 {
 #ifdef __linux__
     close(sock);
@@ -43,11 +51,86 @@ void close_socket(int sock)
 }
 
 
-int connect_to_target(const std::string& host, uint16_t port)
+bool set_non_blocking(socket_t sock, bool enabled)
+{
+#ifdef _WIN32
+    u_long mode = enabled ? 1UL : 0UL;
+    return ioctlsocket(sock, FIONBIO, &mode) == 0;
+#else
+    const int flags = fcntl(sock, F_GETFL, 0);
+    return flags >= 0 && fcntl(sock, F_SETFL,
+                              enabled ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK)) == 0;
+#endif
+}
+
+bool connect_with_timeout(socket_t sock, const sockaddr* address, socklen_t length,
+                          const std::atomic_bool& cancelled,
+                          std::chrono::steady_clock::time_point deadline)
+{
+    if (!set_non_blocking(sock, true))
+        return false;
+
+    const int result = connect(sock, address, length);
+    if (result == 0)
+    {
+        return set_non_blocking(sock, false) && configure_socket_io_timeouts(sock);
+    }
+
+#ifdef _WIN32
+    const int connectError = WSAGetLastError();
+    if (connectError != WSAEWOULDBLOCK && connectError != WSAEINPROGRESS)
+        return false;
+#else
+    if (errno != EINPROGRESS)
+        return false;
+#endif
+
+    while (!cancelled.load())
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+            return false;
+        const auto slice = std::min(std::chrono::milliseconds(100),
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
+        timeval timeout{};
+        timeout.tv_sec = static_cast<long>(slice.count() / 1000);
+        timeout.tv_usec = static_cast<long>((slice.count() % 1000) * 1000);
+        fd_set writeFds;
+        FD_ZERO(&writeFds);
+        FD_SET(sock, &writeFds);
+#ifdef _WIN32
+        const int ready = select(0, nullptr, &writeFds, nullptr, &timeout);
+#else
+        const int ready = select(sock + 1, nullptr, &writeFds, nullptr, &timeout);
+#endif
+        if (ready < 0)
+            return false;
+        if (ready == 0)
+            continue;
+
+        int error = 0;
+#ifdef _WIN32
+        int errorSize = sizeof(error);
+#else
+        socklen_t errorSize = sizeof(error);
+#endif
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR,
+                       reinterpret_cast<char*>(&error), &errorSize) != 0 || error != 0)
+            return false;
+        if (!set_non_blocking(sock, false))
+            return false;
+        return configure_socket_io_timeouts(sock);
+    }
+    return false;
+}
+
+socket_t connect_to_target_worker(const std::string& host, uint16_t port,
+                                  const std::shared_ptr<std::atomic_bool>& cancelled,
+                                  std::chrono::steady_clock::time_point deadline)
 {
     if(host.empty() || port == 0)
     {
-        return -1;
+        return INVALID_SOCKET_VALUE;
     }
 
     struct addrinfo hints, *res = nullptr;
@@ -58,19 +141,38 @@ int connect_to_target(const std::string& host, uint16_t port)
     const std::string port_string = std::to_string(port);
     if (getaddrinfo(host.c_str(), port_string.c_str(), &hints, &res) != 0)
     {
-        return -1;
+        return INVALID_SOCKET_VALUE;
     }
 
-    int connected = -1;
+    std::vector<addrinfo*> candidates;
     for (addrinfo* current = res; current != nullptr; current = current->ai_next)
+        if (current->ai_family == AF_INET)
+            candidates.push_back(current);
+    for (addrinfo* current = res; current != nullptr; current = current->ai_next)
+        if (current->ai_family != AF_INET)
+            candidates.push_back(current);
+
+    socket_t connected = INVALID_SOCKET_VALUE;
+    std::size_t remainingCandidates = candidates.size();
+    for (addrinfo* current : candidates)
     {
-        int sockfd = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
-        if (sockfd < 0)
+        const auto now = std::chrono::steady_clock::now();
+        if (cancelled->load() || now >= deadline)
+            break;
+        const auto candidateDeadline = now + (deadline - now) / remainingCandidates;
+        --remainingCandidates;
+        socket_t sockfd = socket(current->ai_family, current->ai_socktype, current->ai_protocol);
+        if (sockfd == INVALID_SOCKET_VALUE)
             continue;
 
-        if (connect(sockfd, current->ai_addr, static_cast<int>(current->ai_addrlen)) == 0)
+        if (connect_with_timeout(sockfd, current->ai_addr,
+                                 static_cast<socklen_t>(current->ai_addrlen), *cancelled,
+                                 candidateDeadline))
         {
-            connected = sockfd;
+            if (cancelled->load())
+                close_socket(sockfd);
+            else
+                connected = sockfd;
             break;
         }
 
@@ -81,8 +183,39 @@ int connect_to_target(const std::string& host, uint16_t port)
     return connected;
 }
 
+socket_t connect_to_target(const std::string& host, uint16_t port)
+{
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(SOCKS_IO_TIMEOUT_MS - 250);
+    std::packaged_task<socket_t()> task([host, port, cancelled, deadline]() {
+#ifdef _WIN32
+        WSADATA data{};
+        if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
+            return INVALID_SOCKET_VALUE;
+#endif
+        const socket_t result = connect_to_target_worker(host, port, cancelled, deadline);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return result;
+    });
+    auto future = task.get_future();
+    std::thread worker(std::move(task));
+    if (future.wait_for(std::chrono::milliseconds(SOCKS_IO_TIMEOUT_MS)) !=
+        std::future_status::ready)
+    {
+        cancelled->store(true);
+        worker.detach();
+        return INVALID_SOCKET_VALUE;
+    }
+    const socket_t result = future.get();
+    worker.join();
+    return result;
+}
 
-int connect_to_host(uint32_t ip, uint16_t port)
+
+socket_t connect_to_host(uint32_t ip, uint16_t port)
 {
     return connect_to_target(int_to_str(ip), port);
 }
@@ -93,27 +226,32 @@ int connect_to_host(uint32_t ip, uint16_t port)
 // 
 SocksTunnelClient::SocksTunnelClient(int id)
 : m_id(id)
+, m_socketRuntimeReady(true)
 {
     m_internalBuffer.resize(BUF_SIZE);
 
 #ifdef __linux__
 #elif _WIN32
     WSADATA wsaData;
-    int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+    m_socketRuntimeReady = WSAStartup(MAKEWORD(2,2), &wsaData) == 0;
 #endif
 }
 
 
 SocksTunnelClient::~SocksTunnelClient()
 {
+    m_clientfd.reset();
 #ifdef _WIN32
-    WSACleanup();
+    if (m_socketRuntimeReady)
+        WSACleanup();
 #endif
 }
 
 
 int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 {
+    if (!m_socketRuntimeReady)
+        return 0;
 #ifdef __linux__
     signal(SIGPIPE, sig_handler);
 #elif _WIN32
@@ -121,7 +259,7 @@ int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 #endif
 
     m_clientfd.reset(connect_to_host(ip_dst, ntohs(port)));
-    if(m_clientfd.get() == -1)
+    if(m_clientfd.get() == INVALID_SOCKET_VALUE)
     {
         return 0;
     }
@@ -132,6 +270,8 @@ int SocksTunnelClient::init(uint32_t ip_dst, uint16_t port)
 
 int SocksTunnelClient::initHostname(const std::string& hostname, uint16_t port)
 {
+    if (!m_socketRuntimeReady)
+        return 0;
 #ifdef __linux__
     signal(SIGPIPE, sig_handler);
 #elif _WIN32
@@ -139,7 +279,7 @@ int SocksTunnelClient::initHostname(const std::string& hostname, uint16_t port)
 #endif
 
     m_clientfd.reset(connect_to_target(hostname, ntohs(port)));
-    if(m_clientfd.get() == -1)
+    if(m_clientfd.get() == INVALID_SOCKET_VALUE)
     {
         return 0;
     }
@@ -150,8 +290,10 @@ int SocksTunnelClient::initHostname(const std::string& hostname, uint16_t port)
 
 int SocksTunnelClient::process(const std::string& dataIn, std::string& dataOut)
 {
-    if(dataIn.size()>0)
-        send_sock(m_clientfd.get(), dataIn.data(), dataIn.size());
+    if(!dataIn.empty() &&
+       send_sock(m_clientfd.get(), dataIn.data(), static_cast<uint32_t>(dataIn.size())) !=
+           static_cast<int>(dataIn.size()))
+        return -1;
 
     DrainStatus status = readAllAvailableNow_(m_clientfd.get(), dataOut, 0);
     if(status == DrainStatus::Error || status == DrainStatus::Disconnected)

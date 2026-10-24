@@ -22,6 +22,7 @@ class SocksTunnelClient
     private:
         int m_id;
         SocketHandle m_clientfd;
+        bool m_socketRuntimeReady;
 
         std::string m_internalBuffer;
 };

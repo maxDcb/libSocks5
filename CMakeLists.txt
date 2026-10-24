@@ -19,6 +19,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC src)
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 if(WIN32)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(${PROJECT_NAME} ws2_32)
 else()
 	target_link_libraries(${PROJECT_NAME} pthread)
 endif()
