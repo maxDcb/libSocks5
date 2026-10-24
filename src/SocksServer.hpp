@@ -5,6 +5,7 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <utility>
 
 #include "SocksDef.hpp"
 
@@ -59,6 +60,8 @@ class SocksTunnelServer
 
     private:
         SocketHandle m_serverfd;
+        SocketWriteBuffer m_pendingWrite;
+        bool m_dataSocketNonBlocking;
         int m_serverPort;
 
         AddressType m_addressType;
@@ -110,4 +113,6 @@ private:
 
     std::mutex m_mutex;
     std::vector<std::unique_ptr<SocksTunnelServer>> m_socksTunnelServers;
+    std::mutex m_handshakeMutex;
+    std::vector<std::pair<int, socket_t>> m_handshakeSockets;
 };

@@ -298,6 +298,35 @@ int connectAndNegotiateNoAuth(RunningSocksServer& running)
     return client;
 }
 
+void testSlowHandshakeDoesNotBlockOtherClients()
+{
+    RunningSocksServer running;
+    const int stalled = connectLocal(running.port);
+    const int responsive = connectAndNegotiateNoAuth(running);
+    closeSocket(responsive);
+    closeSocket(stalled);
+}
+
+void testPendingWritesAreBounded()
+{
+    SocketWriteBuffer buffer;
+    const std::string oversized(SOCKS_MAX_PENDING_WRITE + 1, 'x');
+    require(buffer.appendAndFlush(INVALID_SOCKET_VALUE, oversized) == BufferedSendStatus::Overflow,
+            "oversized pending write should be rejected before socket I/O");
+}
+
+void testStopInterruptsPendingHandshake()
+{
+    RunningSocksServer running;
+    const int stalled = connectLocal(running.port);
+    const auto started = std::chrono::steady_clock::now();
+    running.server.stop();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    closeSocket(stalled);
+    require(elapsed < std::chrono::seconds(1),
+            "stopping the listener should interrupt pending handshakes");
+}
+
 void testNoAcceptableMethod()
 {
     RunningSocksServer running;
@@ -417,6 +446,12 @@ int main()
         SocketRuntime runtime;
         currentTest = "testNoAcceptableMethod";
         testNoAcceptableMethod();
+        currentTest = "testSlowHandshakeDoesNotBlockOtherClients";
+        testSlowHandshakeDoesNotBlockOtherClients();
+        currentTest = "testPendingWritesAreBounded";
+        testPendingWritesAreBounded();
+        currentTest = "testStopInterruptsPendingHandshake";
+        testStopInterruptsPendingHandshake();
         currentTest = "testOnlyAcceptsLoopbackConnections";
         testOnlyAcceptsLoopbackConnections();
         currentTest = "testIpv4ConnectQueuesTunnelAndSuccessReply";

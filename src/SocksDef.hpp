@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <fcntl.h>
+#include <errno.h>
 #elif _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -12,12 +14,15 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 
 static constexpr std::size_t BUF_SIZE = 2048;
 static constexpr int SOCKS_IO_TIMEOUT_MS = 5000;
+static constexpr std::size_t SOCKS_MAX_PENDING_WRITE = 1024 * 1024;
+static constexpr std::size_t SOCKS_MAX_FLUSH_PER_CALL = 64 * 1024;
 
 #ifdef _WIN32
 using socket_t = SOCKET;
@@ -141,6 +146,76 @@ inline bool configure_socket_io_timeouts(socket_t sock, int timeoutMs = SOCKS_IO
 #endif
 }
 
+inline bool set_socket_non_blocking(socket_t sock, bool enabled)
+{
+#ifdef _WIN32
+    u_long mode = enabled ? 1UL : 0UL;
+    return ioctlsocket(sock, FIONBIO, &mode) == 0;
+#else
+    const int flags = fcntl(sock, F_GETFL, 0);
+    return flags >= 0 && fcntl(sock, F_SETFL,
+                              enabled ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK)) == 0;
+#endif
+}
+
+enum class BufferedSendStatus { Ready, Pending, Overflow, Error };
+
+class SocketWriteBuffer
+{
+public:
+    BufferedSendStatus appendAndFlush(socket_t sock, const std::string& input)
+    {
+        compact();
+        if (input.size() > SOCKS_MAX_PENDING_WRITE - m_data.size())
+            return BufferedSendStatus::Overflow;
+        m_data.append(input);
+
+        std::size_t flushed = 0;
+        while (m_offset < m_data.size() && flushed < SOCKS_MAX_FLUSH_PER_CALL)
+        {
+            const std::size_t remaining = m_data.size() - m_offset;
+            const int chunk = static_cast<int>(std::min<std::size_t>(
+                remaining, SOCKS_MAX_FLUSH_PER_CALL - flushed));
+#ifdef _WIN32
+            const int sent = send(sock, m_data.data() + m_offset, chunk, 0);
+            if (sent < 0 && WSAGetLastError() == WSAEWOULDBLOCK)
+                return BufferedSendStatus::Pending;
+#else
+            const int sent = static_cast<int>(send(
+                sock, m_data.data() + m_offset, chunk, MSG_NOSIGNAL | MSG_DONTWAIT));
+            if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                return BufferedSendStatus::Pending;
+#endif
+            if (sent <= 0)
+                return BufferedSendStatus::Error;
+            m_offset += static_cast<std::size_t>(sent);
+            flushed += static_cast<std::size_t>(sent);
+        }
+
+        if (m_offset == m_data.size())
+        {
+            m_data.clear();
+            m_offset = 0;
+            return BufferedSendStatus::Ready;
+        }
+        return BufferedSendStatus::Pending;
+    }
+
+    std::size_t pendingSize() const { return m_data.size() - m_offset; }
+
+private:
+    void compact()
+    {
+        if (m_offset == 0)
+            return;
+        m_data.erase(0, m_offset);
+        m_offset = 0;
+    }
+
+    std::string m_data;
+    std::size_t m_offset = 0;
+};
+
 
 inline int recv_sock(socket_t sock, char *buffer, uint32_t size)
 {
@@ -208,7 +283,6 @@ inline int send_sock(socket_t sock, const char *buffer, uint32_t size)
 // - This is "drain available bytes", NOT "read a full message".
 // - Uses a max_bytes cap to prevent unbounded memory growth.
 
-#include <string>
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>

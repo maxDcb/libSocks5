@@ -1,8 +1,11 @@
 #include <cstring>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -27,6 +30,65 @@
 
 
 using namespace std;
+
+namespace
+{
+constexpr std::size_t SOCKS_CONNECT_WORKERS = 2;
+constexpr std::size_t SOCKS_CONNECT_QUEUE_LIMIT = 32;
+
+class ConnectWorkerPool
+{
+public:
+    ConnectWorkerPool()
+    {
+        for (std::size_t index = 0; index < SOCKS_CONNECT_WORKERS; ++index)
+            std::thread([this] { worker(); }).detach();
+    }
+
+    std::future<socket_t> submit(std::packaged_task<socket_t()>&& task, bool& accepted)
+    {
+        std::future<socket_t> result = task.get_future();
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_tasks.size() >= SOCKS_CONNECT_QUEUE_LIMIT)
+            {
+                accepted = false;
+                return result;
+            }
+            m_tasks.push_back(std::move(task));
+        }
+        accepted = true;
+        m_ready.notify_one();
+        return result;
+    }
+
+private:
+    void worker()
+    {
+        while (true)
+        {
+            std::packaged_task<socket_t()> task;
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_ready.wait(lock, [this] { return !m_tasks.empty(); });
+                task = std::move(m_tasks.front());
+                m_tasks.pop_front();
+            }
+            task();
+        }
+    }
+
+    std::mutex m_mutex;
+    std::condition_variable m_ready;
+    std::deque<std::packaged_task<socket_t()>> m_tasks;
+};
+
+ConnectWorkerPool& connectWorkerPool()
+{
+    static ConnectWorkerPool* pool = new ConnectWorkerPool();
+    return *pool;
+}
+} // namespace
 
 
 std::string int_to_str(uint32_t ip) 
@@ -128,7 +190,7 @@ socket_t connect_to_target_worker(const std::string& host, uint16_t port,
                                   const std::shared_ptr<std::atomic_bool>& cancelled,
                                   std::chrono::steady_clock::time_point deadline)
 {
-    if(host.empty() || port == 0)
+    if(host.empty() || port == 0 || cancelled->load())
     {
         return INVALID_SOCKET_VALUE;
     }
@@ -200,18 +262,20 @@ socket_t connect_to_target(const std::string& host, uint16_t port)
 #endif
         return result;
     });
-    auto future = task.get_future();
-    std::thread worker(std::move(task));
+    bool accepted = false;
+    auto future = connectWorkerPool().submit(std::move(task), accepted);
+    if (!accepted)
+    {
+        cancelled->store(true);
+        return INVALID_SOCKET_VALUE;
+    }
     if (future.wait_for(std::chrono::milliseconds(SOCKS_IO_TIMEOUT_MS)) !=
         std::future_status::ready)
     {
         cancelled->store(true);
-        worker.detach();
         return INVALID_SOCKET_VALUE;
     }
-    const socket_t result = future.get();
-    worker.join();
-    return result;
+    return future.get();
 }
 
 
@@ -227,6 +291,7 @@ socket_t connect_to_host(uint32_t ip, uint16_t port)
 SocksTunnelClient::SocksTunnelClient(int id)
 : m_id(id)
 , m_socketRuntimeReady(true)
+, m_dataSocketNonBlocking(false)
 {
     m_internalBuffer.resize(BUF_SIZE);
 
@@ -290,9 +355,15 @@ int SocksTunnelClient::initHostname(const std::string& hostname, uint16_t port)
 
 int SocksTunnelClient::process(const std::string& dataIn, std::string& dataOut)
 {
-    if(!dataIn.empty() &&
-       send_sock(m_clientfd.get(), dataIn.data(), static_cast<uint32_t>(dataIn.size())) !=
-           static_cast<int>(dataIn.size()))
+    if (!m_dataSocketNonBlocking)
+    {
+        if (!set_socket_non_blocking(m_clientfd.get(), true))
+            return -1;
+        m_dataSocketNonBlocking = true;
+    }
+
+    const BufferedSendStatus sendStatus = m_pendingWrite.appendAndFlush(m_clientfd.get(), dataIn);
+    if (sendStatus == BufferedSendStatus::Error || sendStatus == BufferedSendStatus::Overflow)
         return -1;
 
     DrainStatus status = readAllAvailableNow_(m_clientfd.get(), dataOut, 0);

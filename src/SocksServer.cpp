@@ -13,6 +13,8 @@
 
 #include <string>
 #include <algorithm>
+#include <chrono>
+#include <future>
 
 #include "SocksServer.hpp"
 #include "SocksDef.hpp"
@@ -128,6 +130,8 @@ using namespace std;
 namespace
 {
 constexpr int SOCKS_HANDSHAKE_TIMEOUT_MS = 5000;
+constexpr std::size_t SOCKS_MAX_PENDING_HANDSHAKES = 32;
+constexpr std::size_t SOCKS_MAX_ACTIVE_TUNNELS = 128;
 
 int recv_sock_timeout(socket_t sock, char* buffer, uint32_t size, int timeoutMs)
 {
@@ -223,6 +227,7 @@ bool check_auth(socket_t sock)
 // 
 SocksTunnelServer::SocksTunnelServer(socket_t serverfd, int serverPort, int id)
 : m_serverfd(serverfd)
+, m_dataSocketNonBlocking(false)
 , m_serverPort(serverPort)
 , m_addressType(AddressType::IPv4)
 , m_ipDst(0)
@@ -388,9 +393,15 @@ int SocksTunnelServer::failHandshake(Response response)
 
 int SocksTunnelServer::process(std::string& dataIn, std::string& dataOut)
 {
-    if(!dataIn.empty() &&
-       send_sock(m_serverfd.get(), dataIn.data(), static_cast<uint32_t>(dataIn.size())) !=
-           static_cast<int>(dataIn.size()))
+    if (!m_dataSocketNonBlocking)
+    {
+        if (!set_socket_non_blocking(m_serverfd.get(), true))
+            return -1;
+        m_dataSocketNonBlocking = true;
+    }
+
+    const BufferedSendStatus sendStatus = m_pendingWrite.appendAndFlush(m_serverfd.get(), dataIn);
+    if (sendStatus == BufferedSendStatus::Error || sendStatus == BufferedSendStatus::Overflow)
         return -1;
 
     DrainStatus status = readAllAvailableNow_(m_serverfd.get(), dataOut, 0);
@@ -444,6 +455,11 @@ void SocksServer::stop()
 {
     m_isStoped.store(true);
     m_listen_sock.reset();
+    {
+        std::lock_guard<std::mutex> lock(m_handshakeMutex);
+        for (const auto& handshake : m_handshakeSockets)
+            ::shutdown(handshake.second, SHUT_RDWR);
+    }
 
     if(m_socks5Server)
     {
@@ -483,7 +499,7 @@ socket_t SocksServer::createServerSocket(struct sockaddr_in &echoclient)
     echoserver.sin_port = htons(m_serverPort);       // server port 
 
     // Bind the server socket 
-    if (bind(serversock, (struct sockaddr *) &echoserver, sizeof(echoserver)) < 0) 
+    if (::bind(serversock, (struct sockaddr *) &echoserver, sizeof(echoserver)) < 0)
     {
         #ifdef __linux__
             close(serversock);
@@ -532,26 +548,105 @@ int SocksServer::handleConnection()
 
     m_isLaunched.store(true);
     int idSocksTunnelServer=0;
+    struct HandshakeJob
+    {
+        std::future<std::unique_ptr<SocksTunnelServer>> result;
+    };
+    std::vector<HandshakeJob> handshakes;
+
+    auto collectHandshakes = [&]
+    {
+        for (auto job = handshakes.begin(); job != handshakes.end();)
+        {
+            if (job->result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+            {
+                ++job;
+                continue;
+            }
+            std::unique_ptr<SocksTunnelServer> tunnel = job->result.get();
+            if (tunnel)
+            {
+                bool atCapacity = false;
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_socksTunnelServers.erase(
+                        std::remove_if(m_socksTunnelServers.begin(), m_socksTunnelServers.end(),
+                            [](const std::unique_ptr<SocksTunnelServer>& item) { return item == nullptr; }),
+                        m_socksTunnelServers.end());
+                    atCapacity = m_socksTunnelServers.size() >= SOCKS_MAX_ACTIVE_TUNNELS;
+                    if (!atCapacity)
+                        m_socksTunnelServers.push_back(std::move(tunnel));
+                }
+                if (atCapacity)
+                    tunnel->failHandshake(Response::ConnectionNotAllowed);
+            }
+            job = handshakes.erase(job);
+        }
+    };
+
     while(!m_isStoped)
     {
+        collectHandshakes();
+        if (handshakes.size() >= SOCKS_MAX_PENDING_HANDSHAKES)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+
+        const socket_t listenSocket = m_listen_sock.get();
+        if (listenSocket == INVALID_SOCKET_VALUE)
+            break;
+        fd_set readFds;
+        FD_ZERO(&readFds);
+        FD_SET(listenSocket, &readFds);
+        timeval timeout{};
+        timeout.tv_usec = 50000;
+#ifdef _WIN32
+        const int ready = select(0, &readFds, nullptr, nullptr, &timeout);
+#else
+        const int ready = select(listenSocket + 1, &readFds, nullptr, nullptr, &timeout);
+#endif
+        if (ready <= 0)
+            continue;
+
         int clientlen = sizeof(echoclient);
         socket_t clientsock = INVALID_SOCKET_VALUE;
 #ifdef __linux__
-        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, (uint*)&clientlen)) != INVALID_SOCKET_VALUE)
+        if ((clientsock = accept(listenSocket, (struct sockaddr *) &echoclient, (uint*)&clientlen)) != INVALID_SOCKET_VALUE)
 #elif _WIN32
-        if ((clientsock = accept(m_listen_sock.get(), (struct sockaddr *) &echoclient, &clientlen)) != INVALID_SOCKET_VALUE)
+        if ((clientsock = accept(listenSocket, (struct sockaddr *) &echoclient, &clientlen)) != INVALID_SOCKET_VALUE)
 #endif
         {
             configure_socket_io_timeouts(clientsock);
-            std::unique_ptr<SocksTunnelServer> socksTunnelServer = std::make_unique<SocksTunnelServer>(clientsock, m_serverPort, idSocksTunnelServer);
-            int initResult = socksTunnelServer->init();
-            if(initResult)
+            const int tunnelId = idSocksTunnelServer;
             {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                m_socksTunnelServers.push_back(std::move(socksTunnelServer));
+                std::lock_guard<std::mutex> lock(m_handshakeMutex);
+                m_handshakeSockets.emplace_back(tunnelId, clientsock);
             }
+            handshakes.push_back(HandshakeJob{
+                std::async(std::launch::async, [this, clientsock, serverPort = m_serverPort, tunnelId]() mutable
+                {
+                    auto tunnel = std::make_unique<SocksTunnelServer>(clientsock, serverPort, tunnelId);
+                    const bool initialized = tunnel->init() != 0;
+                    {
+                        std::lock_guard<std::mutex> lock(m_handshakeMutex);
+                        m_handshakeSockets.erase(
+                            std::remove_if(m_handshakeSockets.begin(), m_handshakeSockets.end(),
+                                [tunnelId](const auto& handshake) { return handshake.first == tunnelId; }),
+                            m_handshakeSockets.end());
+                    }
+                    if (!initialized)
+                        return std::unique_ptr<SocksTunnelServer>();
+                    return tunnel;
+                })});
             idSocksTunnelServer++;
         }
+    }
+
+    for (auto& job : handshakes)
+    {
+        std::unique_ptr<SocksTunnelServer> tunnel = job.result.get();
+        (void)tunnel;
     }
     m_listen_sock.reset();
     m_isLaunched.store(false);
